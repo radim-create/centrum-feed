@@ -2,7 +2,10 @@ name: Build Centrum feed
 
 on:
   schedule:
-    - cron: "6 * * * *"     # kazdou hodinu v 6. minute (UTC = stejna minuta i v CET/CEST)
+    # Zaloha; hlavni spousteni resi Cloudflare Worker msn-feed-trigger.
+    # 10. minuta = 5 minut za msn-feed buildem (:05), aby byl zdrojovy feed
+    # uz nasazeny na GitHub Pages. Minuta je stejna v UTC i v CET/CEST.
+    - cron: "10 * * * *"
   workflow_dispatch: {}     # rucni spusteni z UI
 
 permissions:
