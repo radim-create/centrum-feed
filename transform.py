@@ -60,6 +60,15 @@ CHANNEL_IMAGE_URL = os.environ.get(
 # takze se pouzije tahle pevna hodnota.
 DEFAULT_CATEGORY = os.environ.get("DEFAULT_CATEGORY", "Film")
 
+# Nahledovy obrazek musi byt u KAZDE polozky. Zdrojovy MSN feed ho ale nekdy
+# nema - msn-feed pipeline kontroluje nahledy Claudem na viditelne nasili a
+# zavadne vyhazuje. To je pozadavek MSN Partner Hubu, Centrum.cz ho nema.
+# Obrazky v tele clanku (content:encoded) msn-feed nefiltruje, takze kdyz
+# nahled chybi, vezme se prvni obrazek z tela. Az kdyz ani tam zadny neni,
+# nastoupi FALLBACK_IMAGE_URL.
+FALLBACK_IMAGE_URL = os.environ.get(
+    "FALLBACK_IMAGE_URL", "https://radim-create.github.io/centrum-feed/logo.png")
+
 DOCS_URL = "https://www.rssboard.org/rss-specification"
 
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -102,6 +111,26 @@ def rfc822_prague(dt: datetime) -> str:
     return format_datetime(dt.astimezone(TZ))
 
 
+def mime_for(url: str) -> str:
+    ext = re.sub(r"[?#].*$", "", url).lower().rsplit(".", 1)[-1]
+    return {
+        "png": "image/png",
+        "gif": "image/gif",
+        "webp": "image/webp",
+        "avif": "image/avif",
+    }.get(ext, "image/jpeg")
+
+
+def first_body_image(content: str) -> str:
+    """Prvni http(s) obrazek z tela clanku. Pouziva se, kdyz chybi nahled."""
+    for m in re.finditer(r'<img\b[^>]*?\bsrc\s*=\s*["\']([^"\']+)["\']',
+                         content, re.I):
+        url = html.unescape(m.group(1)).strip()
+        if url.startswith(("http://", "https://")):
+            return url
+    return ""
+
+
 # ------------------------------------------------------------------ transform
 
 def transform_item(item: str, stats: dict) -> tuple[datetime, str] | None:
@@ -129,8 +158,10 @@ def transform_item(item: str, stats: dict) -> tuple[datetime, str] | None:
     if pub_dt.tzinfo is None:
         pub_dt = pub_dt.replace(tzinfo=timezone.utc)
 
-    # obrazek: MSN feed ma <media:content url=... ><media:credit>...</...>
-    media_xml = ""
+    # Nahledovy obrazek. Trojstupnovy fallback, aby ho mela KAZDA polozka:
+    #   1) <media:content> ze zdrojoveho MSN feedu
+    #   2) prvni obrazek z tela clanku (kdyz MSN nahled vyhodil vetting nasili)
+    #   3) FALLBACK_IMAGE_URL
     img_url = attrs = inner = ""
     m = re.search(r'<media:content\s+url="([^"]+)"([^>]*)>(.*?)</media:content>',
                   item, re.S)
@@ -142,21 +173,34 @@ def transform_item(item: str, stats: dict) -> tuple[datetime, str] | None:
             img_url, attrs = m.group(1), m.group(2)
 
     if img_url:
+        source = "feed"
         t = re.search(r'type="([^"]+)"', attrs)
-        img_type = t.group(1) if t else "image/jpeg"
-        media_title = field(inner, "media:title") if inner else ""
-        media_xml = (
-            "                                    <media:content\n"
-            f'                        url="{esc(img_url)}"\n'
-            f'                        type="{img_type}"\n'
-            '                        medium="image"\n'
-            "                    >\n"
-            "                        \n"
-            f"                        <media:title>{esc(media_title)}</media:title>\n"
-            "                        \n"
-            "                    </media:content>\n"
-        )
-        stats["with_image"] += 1
+        img_type = t.group(1) if t else mime_for(img_url)
+    else:
+        img_url = first_body_image(content)
+        if img_url:
+            source = "body"
+            stats["image_from_body"].append(title)
+        else:
+            img_url = FALLBACK_IMAGE_URL
+            source = "fallback"
+            stats["image_fallback"].append(title)
+        img_type = mime_for(img_url)
+
+    media_title = field(inner, "media:title") if inner else ""
+    media_xml = (
+        "                                    <media:content\n"
+        f'                        url="{esc(img_url)}"\n'
+        f'                        type="{img_type}"\n'
+        '                        medium="image"\n'
+        "                    >\n"
+        "                        \n"
+        f"                        <media:title>{esc(media_title)}</media:title>\n"
+        "                        \n"
+        "                    </media:content>\n"
+    )
+    stats["with_image"] += 1
+    stats["image_source"][source] = stats["image_source"].get(source, 0) + 1
 
     stats["published"].append(title)
 
@@ -187,7 +231,8 @@ def main() -> int:
               file=sys.stderr)
         return 1
 
-    stats = {"published": [], "skipped": [], "with_image": 0}
+    stats = {"published": [], "skipped": [], "with_image": 0,
+             "image_from_body": [], "image_fallback": [], "image_source": {}}
     built = [x for x in (transform_item(i, stats) for i in items) if x]
     if not built:
         print("ERROR: zadna polozka neprosla transformaci", file=sys.stderr)
@@ -227,12 +272,26 @@ def main() -> int:
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT.write_text(feed, encoding="utf-8")
 
-    print(f"published={len(stats['published'])} "
-          f"with_image={stats['with_image']} "
+    n = len(stats["published"])
+    print(f"published={n} "
+          f"with_image={stats['with_image']}/{n} "
+          f"img_feed={stats['image_source'].get('feed', 0)} "
+          f"img_body={stats['image_source'].get('body', 0)} "
+          f"img_fallback={stats['image_source'].get('fallback', 0)} "
           f"skipped={len(stats['skipped'])} "
           f"newest={rfc822_prague(newest)}")
+    for t in stats["image_from_body"]:
+        print(f"  nahled z tela clanku (MSN nahled chybel): {t}")
+    for t in stats["image_fallback"]:
+        print(f"  ! nahled z FALLBACK_IMAGE_URL (v tele zadny obrazek): {t}")
     for t in stats["skipped"]:
         print(f"  preskoceno (chybi title/link/pubDate): {t}")
+
+    # Tvrda garance: kazda publikovana polozka musi mit nahledovy obrazek.
+    if stats["with_image"] != n:
+        print(f"ERROR: {n - stats['with_image']} polozek bez obrazku",
+              file=sys.stderr)
+        return 1
     return 0
 
 

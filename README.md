@@ -23,8 +23,29 @@ RSS feed pro **Centrum.cz**, generovany z hotoveho MSN feedu.
 | casova zona | GMT | Europe/Prague (`+0200` / `+0100`) |
 
 Vsechna pravidla z MSN pipeline (cutoff datum, vyrazeni "Recenzujte a vyhrajte",
-odstraneni iframu, vetovani obrazku, stabilni pubDate) uz jsou obsazena ve
-zdrojovem feedu, takze se tady neopakuji.
+odstraneni iframu, stabilni pubDate) uz jsou obsazena ve zdrojovem feedu, takze
+se tady neopakuji.
+
+## Nahledovy obrazek ma vzdy kazda polozka
+
+MSN pipeline kontroluje nahledy Claudem na viditelne nasili a zbrane a zavadne
+z feedu vyhazuje (pravidlo 5 v `msn-feed/transform.py`). To je pozadavek MSN
+Partner Hubu -- Centrum.cz ho nema. Nektere polozky proto prijdou ze zdroje bez
+`<media:content>`.
+
+Obrazky v tele clanku (`content:encoded`) msn-feed nefiltruje, takze se pouzije
+trojstupnovy fallback:
+
+1. `<media:content>` ze zdrojoveho MSN feedu
+2. prvni `http(s)` obrazek z tela clanku (relativni cesty a `data:` URI se
+   preskakuji)
+3. `FALLBACK_IMAGE_URL`
+
+Pokud by i tak nejaka polozka zustala bez obrazku, skript skonci s chybou a
+workflow spadne -- radeji hlasita chyba nez tichy feed s dirou.
+
+V logu buildu je videt rozpad: `img_feed=19 img_body=1 img_fallback=0`,
+plus u kazde polozky s nahradou i jeji nazev.
 
 ## Spousteni
 
@@ -49,6 +70,7 @@ Vse jde prepsat pres env promenne (viz zacatek `transform.py`):
 | `CHANNEL_DESCRIPTION` | popis Kinoboxu |
 | `CHANNEL_IMAGE_URL` | `https://radim-create.github.io/centrum-feed/logo.png` (soubor `docs/logo.png`) |
 | `DEFAULT_CATEGORY` | `Film` |
+| `FALLBACK_IMAGE_URL` | `https://radim-create.github.io/centrum-feed/logo.png` |
 
 ## Nastaveni repa
 
