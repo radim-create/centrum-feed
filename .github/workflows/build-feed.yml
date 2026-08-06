@@ -4,12 +4,16 @@ on:
   schedule:
     # Zaloha; hlavni spousteni resi Cloudflare Worker msn-feed-trigger.
     # 10. minuta = 5 minut za msn-feed buildem (:05), aby byl zdrojovy feed
-    # uz nasazeny na GitHub Pages. Minuta je stejna v UTC i v CET/CEST.
+    # uz nasazeny. Minuta je stejna v UTC i v CET/CEST.
     - cron: "10 * * * *"
   workflow_dispatch: {}     # rucni spusteni z UI
 
+# contents: zapis docs/feed.xml zpet do repa
+# pages + id-token: nasazeni na GitHub Pages primo odtud
 permissions:
   contents: write
+  pages: write
+  id-token: write
 
 concurrency:
   group: build-centrum-feed
@@ -18,6 +22,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      pubdate: ${{ steps.gen.outputs.pubdate }}
     steps:
       - uses: actions/checkout@v4
 
@@ -26,10 +32,18 @@ jobs:
           python-version: "3.12"
 
       - name: Generate feed
+        id: gen
         env:
           SOURCE_URL: https://radim-create.github.io/msn-feed/feed.xml
           SELF_URL: https://radim-create.github.io/centrum-feed/feed.xml
-        run: python transform.py
+        run: |
+          python transform.py
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import re
+          xml = open("docs/feed.xml", encoding="utf-8").read()
+          m = re.search(r"<pubDate>(.*?)</pubDate>", xml)
+          print(f"pubdate={m.group(1) if m else ''}")
+          PY
 
       - name: Commit & push if changed
         run: |
@@ -42,3 +56,68 @@ jobs:
             git commit -m "Update Centrum feed"
             git push
           fi
+
+      # Nasazujeme obsah docs/ jako Pages artefakt. Nahrazuje to stary rezim
+      # "Deploy from a branch", ktery pousteji Jekyll a jehoz deploy krok
+      # opakovane selhaval, aniz by to tento workflow poznal.
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      # Pojistka: deploy muze skoncit zelene a CDN presto chvili servíruje
+      # starou verzi. Overime, ze verejna URL uz vraci ten feed, ktery jsme
+      # prave postavili. Kdyz ne, workflow spadne a prijde mail.
+      - name: Overit verejny feed
+        env:
+          EXPECTED: ${{ needs.build.outputs.pubdate }}
+          FEED_URL: https://radim-create.github.io/centrum-feed/feed.xml
+        run: |
+          python - <<'PY'
+          import os, re, sys, time, urllib.request
+
+          expected = os.environ["EXPECTED"].strip()
+          url = os.environ["FEED_URL"]
+          if not expected:
+              print("Nezname ocekavany pubDate, kontrolu preskakuji.")
+              sys.exit(0)
+
+          last = None
+          for attempt in range(1, 11):          # ~5 minut
+              req = urllib.request.Request(
+                  f"{url}?cb={int(time.time()*1000)}",
+                  headers={"Cache-Control": "no-cache", "Pragma": "no-cache"})
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      xml = r.read().decode("utf-8")
+                  m = re.search(r"<pubDate>(.*?)</pubDate>", xml)
+                  last = m.group(1) if m else "(zadny pubDate)"
+                  n = xml.count("<item>")
+                  if last == expected:
+                      print(f"OK: verejny feed je aktualni ({last}, {n} polozek)")
+                      sys.exit(0)
+                  print(f"  pokus {attempt}: verejne je {last!r}, cekame {expected!r}")
+              except Exception as e:
+                  last = f"chyba: {e}"
+                  print(f"  pokus {attempt}: {last}")
+              time.sleep(30)
+
+          print(f"\nERROR: {url} po 5 minutach porad nevraci aktualni feed.",
+                file=sys.stderr)
+          print(f"  ocekavano: {expected}", file=sys.stderr)
+          print(f"  nalezeno:  {last}", file=sys.stderr)
+          print("  docs/feed.xml v repu je spravne - selhalo az zverejneni.",
+                file=sys.stderr)
+          sys.exit(1)
+          PY
