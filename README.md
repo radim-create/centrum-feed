@@ -71,6 +71,47 @@ Vse jde prepsat pres env promenne (viz zacatek `transform.py`):
 | `CHANNEL_IMAGE_URL` | `https://radim-create.github.io/centrum-feed/logo.png` (soubor `docs/logo.png`) |
 | `DEFAULT_CATEGORY` | `Film` |
 | `FALLBACK_IMAGE_URL` | `https://radim-create.github.io/centrum-feed/logo.png` |
+| `EMBEDS_URL` | `https://raw.githubusercontent.com/radim-create/msn-feed/main/embeds.json` |
+| `EMBED_BASE` | `https://www.kinobox.cz/embed/` |
+| `EMBED_WIDTH` / `EMBED_HEIGHT` | `580` / `326` |
+
+## Video se prehraje primo v clanku
+
+MSN iframy zakazuje, takze je `msn-feed` maze a nahrazuje vetou
+**"Video si můžete přehrát na Kinoboxu."** s odkazem na clanek. Pro ctenare na
+Centru je ten odkaz slepy: vede na Kinobox clanek, ktery ho posle zpatky na
+Centrum, a video nevidi.
+
+Centrum ale iframy povoluje ([dokumentace][doc], sekce *Pokrocile komponenty ->
+Embedded content*), takze se veta nahrazuje skutecnym prehravacem:
+
+```html
+<p><iframe width="580" height="326" src="https://www.kinobox.cz/embed/2050725"
+   title="Kinobox video player" frameborder="0" allowfullscreen></iframe></p>
+```
+
+Samotne id videa uz v MSN feedu neni. `msn-feed` ho proto **pred** smazanim
+iframu zapisuje do `embeds.json` (mapa `id clanku` -> `id videa`), odkud se sem
+cte. Vystup pro MSN se tim nemeni ani o bajt -- je to jednosmerny postranni
+kanal.
+
+```
+Kinobox API --> msn-feed --> docs/feed.xml   (beze zmeny, bez iframu)
+                    |
+                    +------> embeds.json     {"56695": "2050725"}
+                                  |
+              centrum-feed <------+  slozi iframe zpet
+```
+
+Kdyz pro clanek zaznam chybi (nebo je `embeds.json` nedostupny), veta s odkazem
+zustane, jak byla -- lepsi slepy odkaz nez zmizely obsah. V logu je to videt
+jako `video_bez_id=N`.
+
+Video konci na konci clanku, ne na sve puvodni pozici. To je dane tim, ze
+`msn-feed` iframe vyrizne a vetu prilepi az za text; puvodni umisteni se
+nikam neuklada.
+
+[doc]: https://partner.centrum.cz/jak-to-funguje/dokumentace
 
 ## Nastaveni repa
 

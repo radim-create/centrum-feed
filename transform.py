@@ -22,6 +22,7 @@ Zadne externi zavislosti (jen stdlib), takze to bezi na holem GitHub runneru.
 """
 
 import html
+import json
 import os
 import re
 import sys
@@ -68,6 +69,25 @@ DEFAULT_CATEGORY = os.environ.get("DEFAULT_CATEGORY", "Film")
 # nastoupi FALLBACK_IMAGE_URL.
 FALLBACK_IMAGE_URL = os.environ.get(
     "FALLBACK_IMAGE_URL", "https://radim-create.github.io/centrum-feed/logo.png")
+
+# Video embed.
+# MSN zakazuje iframy, takze msn-feed je maze a nahrazuje vetou VIDEO_LINE
+# s odkazem na clanek. Pro ctenare na Centru je ten odkaz slepy - vede na
+# clanek, ktery ho posle zpatky na Centrum. Centrum ale iframy povoluje
+# (partner.centrum.cz/jak-to-funguje/dokumentace, sekce Embedded content),
+# takze vetu nahradime skutecnym prehravacem.
+#
+# Samotne id videa uz v MSN feedu neni. msn-feed ho proto pri mazani iframu
+# zapisuje do embeds.json (mapa "id clanku" -> "id videa"), odkud se sem cte.
+EMBEDS_URL = os.environ.get(
+    "EMBEDS_URL",
+    "https://raw.githubusercontent.com/radim-create/msn-feed/main/embeds.json")
+
+VIDEO_LINE = "Video si můžete přehrát na Kinoboxu."
+EMBED_BASE = os.environ.get("EMBED_BASE", "https://www.kinobox.cz/embed/")
+EMBED_WIDTH = os.environ.get("EMBED_WIDTH", "580")
+EMBED_HEIGHT = os.environ.get("EMBED_HEIGHT", "326")
+EMBED_TITLE = "Kinobox video player"
 
 DOCS_URL = "https://www.rssboard.org/rss-specification"
 
@@ -121,6 +141,50 @@ def mime_for(url: str) -> str:
     }.get(ext, "image/jpeg")
 
 
+def article_id(link: str) -> str:
+    """Kinobox id clanku z .../clanky/{kategorie}/{id}-{slug}."""
+    m = re.search(r"/clanky/[^/]+/(\d+)-", link)
+    return m.group(1) if m else link
+
+
+def video_iframe(embed_id: str) -> str:
+    return (
+        f'<p><iframe width="{esc(EMBED_WIDTH)}" height="{esc(EMBED_HEIGHT)}" '
+        f'src="{esc(EMBED_BASE + embed_id)}" title="{esc(EMBED_TITLE)}" '
+        f'frameborder="0" allowfullscreen></iframe></p>'
+    )
+
+
+def embed_video(content: str, link: str, embeds: dict, stats: dict,
+                title: str) -> str:
+    """Nahradi vetu 'Video si muzete prehrat na Kinoboxu.' realnym embedem.
+
+    Kdyz pro clanek zadne id videa neznam, necha vetu byt - lepsi slepy
+    odkaz nez zmizely obsah.
+    """
+    if VIDEO_LINE not in content:
+        return content
+
+    embed_id = embeds.get(article_id(link))
+    if not embed_id:
+        stats["video_bez_id"].append(title)
+        return content
+
+    # msn-feed prida presne: <p><b><a href="{link}">VIDEO_LINE</a></b></p>
+    pattern = (r"<p>\s*<b>\s*<a\b[^>]*>\s*" + re.escape(VIDEO_LINE)
+               + r"\s*</a>\s*</b>\s*</p>")
+    new, n = re.subn(pattern, video_iframe(embed_id), content, count=1)
+    if n == 0:
+        # Odstavec vypada jinak, nez cekame - nahradime aspon samotnou vetu,
+        # aby se obsah neztratil a nezustal slepy odkaz.
+        new = content.replace(VIDEO_LINE, "", 1)
+        new += video_iframe(embed_id)
+        stats["video_jiny_tvar"].append(title)
+    else:
+        stats["video_embed"].append(title)
+    return new
+
+
 def first_body_image(content: str) -> str:
     """Prvni http(s) obrazek z tela clanku. Pouziva se, kdyz chybi nahled."""
     for m in re.finditer(r'<img\b[^>]*?\bsrc\s*=\s*["\']([^"\']+)["\']',
@@ -133,7 +197,8 @@ def first_body_image(content: str) -> str:
 
 # ------------------------------------------------------------------ transform
 
-def transform_item(item: str, stats: dict) -> tuple[datetime, str] | None:
+def transform_item(item: str, stats: dict,
+                   embeds: dict) -> tuple[datetime, str] | None:
     title = field(item, "title")
     link = field(item, "link")
     desc = field(item, "description")
@@ -157,6 +222,8 @@ def transform_item(item: str, stats: dict) -> tuple[datetime, str] | None:
         return None
     if pub_dt.tzinfo is None:
         pub_dt = pub_dt.replace(tzinfo=timezone.utc)
+
+    content = embed_video(content, link, embeds, stats, title)
 
     # Nahledovy obrazek. Trojstupnovy fallback, aby ho mela KAZDA polozka:
     #   1) <media:content> ze zdrojoveho MSN feedu
@@ -219,6 +286,25 @@ def transform_item(item: str, stats: dict) -> tuple[datetime, str] | None:
     return pub_dt, xml
 
 
+def load_embeds() -> dict:
+    """Mapa 'id clanku' -> 'id videa' z msn-feed repa.
+
+    Nedostupnost neni fatalni: feed se postavi bez embedu, jen se to nahlasi.
+    """
+    path = os.environ.get("EMBEDS_FILE")
+    try:
+        raw = (Path(path).read_text(encoding="utf-8") if path
+               else http_get(EMBEDS_URL, timeout=30).decode("utf-8"))
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise ValueError("embeds.json neni objekt")
+        return {str(k): str(v) for k, v in data.items()}
+    except Exception as e:
+        print(f"WARNING: embeds.json se nepodarilo nacist ({e}) - "
+              f"videa zustanou jako textovy odkaz", file=sys.stderr)
+        return {}
+
+
 def main() -> int:
     src = os.environ.get("SOURCE_FILE")
     xml = (Path(src).read_text(encoding="utf-8") if src
@@ -231,9 +317,12 @@ def main() -> int:
               file=sys.stderr)
         return 1
 
+    embeds = load_embeds()
+
     stats = {"published": [], "skipped": [], "with_image": 0,
-             "image_from_body": [], "image_fallback": [], "image_source": {}}
-    built = [x for x in (transform_item(i, stats) for i in items) if x]
+             "image_from_body": [], "image_fallback": [], "image_source": {},
+             "video_embed": [], "video_bez_id": [], "video_jiny_tvar": []}
+    built = [x for x in (transform_item(i, stats, embeds) for i in items) if x]
     if not built:
         print("ERROR: zadna polozka neprosla transformaci", file=sys.stderr)
         return 1
@@ -278,8 +367,16 @@ def main() -> int:
           f"img_feed={stats['image_source'].get('feed', 0)} "
           f"img_body={stats['image_source'].get('body', 0)} "
           f"img_fallback={stats['image_source'].get('fallback', 0)} "
+          f"video_embed={len(stats['video_embed'])} "
+          f"video_bez_id={len(stats['video_bez_id'])} "
           f"skipped={len(stats['skipped'])} "
           f"newest={rfc822_prague(newest)}")
+    for t in stats["video_embed"]:
+        print(f"  video: vlozen iframe: {t}")
+    for t in stats["video_jiny_tvar"]:
+        print(f"  ! video: odstavec mel jiny tvar, iframe pripojen na konec: {t}")
+    for t in stats["video_bez_id"]:
+        print(f"  ! video: chybi zaznam v embeds.json, zustava odkaz: {t}")
     for t in stats["image_from_body"]:
         print(f"  nahled z tela clanku (MSN nahled chybel): {t}")
     for t in stats["image_fallback"]:
