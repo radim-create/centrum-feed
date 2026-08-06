@@ -113,6 +113,24 @@ nikam neuklada.
 
 [doc]: https://partner.centrum.cz/jak-to-funguje/dokumentace
 
+## Kdyz je verejna URL starsi nez git
+
+`docs/feed.xml` v gitu je vzdy zdroj pravdy. Verejna adresa ho ale servíruje az
+po nasazeni **pages build and deployment**, a to obcas selze nebo se vubec
+nespusti (videno 6. 8. 2026: dva neuspesne deploye za sebou, verejny feed
+zamrzly na 5 hodin, GitHub Status pritom hlasil vse v poradku).
+
+Poznas to tak, ze `<pubDate>` v `<channel>` na verejne URL je starsi nez
+v gitu. Kontrola:
+
+- https://github.com/radim-create/centrum-feed/actions -> workflow
+  *pages build and deployment*, posledni beh musi byt zeleny a na aktualnim SHA
+- https://github.com/radim-create/centrum-feed/deployments -> stav posledniho
+  nasazeni
+
+Nespravi se to samo. Nejspolehlivejsi je vynutit novy deploy jakymkoli pushem
+do `main` (staci uprava README) -- nasazeni se pak spusti na aktualni commit.
+
 ## Nastaveni repa
 
 1. **Settings -> Pages** -> Source: `Deploy from a branch`, branch `main`, folder `/docs`.
