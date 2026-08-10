@@ -83,6 +83,13 @@ EMBEDS_URL = os.environ.get(
     "EMBEDS_URL",
     "https://raw.githubusercontent.com/radim-create/msn-feed/main/embeds.json")
 
+# Puvodni nahledovy obrazek clanku, jak ho msn-feed videl PRED vettingem.
+# Stejny postranni kanal jako embeds.json. Nutny proto, ze kinobox.cz vraci
+# CI runnerum 403, takze si stranku clanku nemuzeme stahnout sami.
+THUMBS_URL = os.environ.get(
+    "THUMBS_URL",
+    "https://raw.githubusercontent.com/radim-create/msn-feed/main/thumbs.json")
+
 VIDEO_LINE = "Video si můžete přehrát na Kinoboxu."
 EMBED_BASE = os.environ.get("EMBED_BASE", "https://www.kinobox.cz/embed/")
 EMBED_WIDTH = os.environ.get("EMBED_WIDTH", "580")
@@ -228,8 +235,8 @@ def og_image(link: str) -> str:
 
 # ------------------------------------------------------------------ transform
 
-def transform_item(item: str, stats: dict,
-                   embeds: dict) -> tuple[datetime, str] | None:
+def transform_item(item: str, stats: dict, embeds: dict,
+                   thumbs: dict) -> tuple[datetime, str] | None:
     title = field(item, "title")
     link = field(item, "link")
     desc = field(item, "description")
@@ -275,19 +282,26 @@ def transform_item(item: str, stats: dict,
         t = re.search(r'type="([^"]+)"', attrs)
         img_type = t.group(1) if t else mime_for(img_url)
     else:
-        img_url = first_body_image(content)
+        # Puvodni nahled z thumbs.json - to je presne ten obrazek, ktery
+        # clanku patri; msn-feed ho jen vyradil kvuli pravidlum MSN.
+        img_url = thumbs.get(article_id(link), "")
         if img_url:
-            source = "body"
-            stats["image_from_body"].append(title)
+            source = "msn_thumb"
+            stats["image_from_thumbs"].append(title)
         else:
-            img_url = og_image(link)
+            img_url = first_body_image(content)
             if img_url:
-                source = "og"
-                stats["image_from_og"].append(title)
+                source = "body"
+                stats["image_from_body"].append(title)
             else:
-                img_url = FALLBACK_IMAGE_URL
-                source = "fallback"
-                stats["image_fallback"].append(title)
+                img_url = og_image(link)
+                if img_url:
+                    source = "og"
+                    stats["image_from_og"].append(title)
+                else:
+                    img_url = FALLBACK_IMAGE_URL
+                    source = "fallback"
+                    stats["image_fallback"].append(title)
         img_type = mime_for(img_url)
 
     media_title = field(inner, "media:title") if inner else ""
@@ -322,22 +336,22 @@ def transform_item(item: str, stats: dict,
     return pub_dt, xml
 
 
-def load_embeds() -> dict:
-    """Mapa 'id clanku' -> 'id videa' z msn-feed repa.
+def load_json_map(url: str, file_env: str, popis: str) -> dict:
+    """Nacte mapu 'id clanku' -> hodnota z msn-feed repa.
 
-    Nedostupnost neni fatalni: feed se postavi bez embedu, jen se to nahlasi.
+    Nedostupnost neni fatalni: feed se postavi bez teto nahrady, jen se to
+    nahlasi do logu.
     """
-    path = os.environ.get("EMBEDS_FILE")
+    path = os.environ.get(file_env)
     try:
         raw = (Path(path).read_text(encoding="utf-8") if path
-               else http_get(EMBEDS_URL, timeout=30).decode("utf-8"))
+               else http_get(url, timeout=30).decode("utf-8"))
         data = json.loads(raw)
         if not isinstance(data, dict):
-            raise ValueError("embeds.json neni objekt")
+            raise ValueError(f"{popis} neni objekt")
         return {str(k): str(v) for k, v in data.items()}
     except Exception as e:
-        print(f"WARNING: embeds.json se nepodarilo nacist ({e}) - "
-              f"videa zustanou jako textovy odkaz", file=sys.stderr)
+        print(f"WARNING: {popis} se nepodarilo nacist ({e})", file=sys.stderr)
         return {}
 
 
@@ -353,13 +367,15 @@ def main() -> int:
               file=sys.stderr)
         return 1
 
-    embeds = load_embeds()
+    embeds = load_json_map(EMBEDS_URL, "EMBEDS_FILE", "embeds.json")
+    thumbs = load_json_map(THUMBS_URL, "THUMBS_FILE", "thumbs.json")
 
     stats = {"published": [], "skipped": [], "with_image": 0,
-             "image_from_body": [], "image_from_og": [], "image_fallback": [],
+             "image_from_body": [], "image_from_thumbs": [],
+             "image_from_og": [], "image_fallback": [],
              "image_source": {},
              "video_embed": [], "video_bez_id": [], "video_jiny_tvar": []}
-    built = [x for x in (transform_item(i, stats, embeds) for i in items) if x]
+    built = [x for x in (transform_item(i, stats, embeds, thumbs) for i in items) if x]
     if not built:
         print("ERROR: zadna polozka neprosla transformaci", file=sys.stderr)
         return 1
@@ -402,6 +418,7 @@ def main() -> int:
     print(f"published={n} "
           f"with_image={stats['with_image']}/{n} "
           f"img_feed={stats['image_source'].get('feed', 0)} "
+          f"img_thumb={stats['image_source'].get('msn_thumb', 0)} "
           f"img_body={stats['image_source'].get('body', 0)} "
           f"img_og={stats['image_source'].get('og', 0)} "
           f"img_fallback={stats['image_source'].get('fallback', 0)} "
@@ -415,6 +432,8 @@ def main() -> int:
         print(f"  ! video: odstavec mel jiny tvar, iframe pripojen na konec: {t}")
     for t in stats["video_bez_id"]:
         print(f"  ! video: chybi zaznam v embeds.json, zustava odkaz: {t}")
+    for t in stats["image_from_thumbs"]:
+        print(f"  nahled z thumbs.json (MSN ho vyradil): {t}")
     for t in stats["image_from_body"]:
         print(f"  nahled z tela clanku (MSN nahled chybel): {t}")
     for t in stats["image_from_og"]:

@@ -37,20 +37,22 @@ Obrazky v tele clanku (`content:encoded`) msn-feed nefiltruje, takze se pouzije
 ctyrstupnovy fallback:
 
 1. `<media:content>` ze zdrojoveho MSN feedu
-2. prvni `http(s)` obrazek z tela clanku (relativni cesty a `data:` URI se
+2. **`thumbs.json`** -- puvodni nahled clanku, jak ho msn-feed videl PRED
+   vettingem (stejny postranni kanal jako `embeds.json`)
+3. prvni `http(s)` obrazek z tela clanku (relativni cesty a `data:` URI se
    preskakuji)
-3. **`og:image` ze stranky clanku** -- stahne se `link` polozky a vytahne
-   `<meta property="og:image">`
-4. `FALLBACK_IMAGE_URL` (logo)
+4. `og:image` ze stranky clanku
+5. `FALLBACK_IMAGE_URL` (logo)
 
-Krok 3 tam je proto, ze **spousta clanku nema v tele zadny obrazek** -- u
-kratkych zprav a recenzi je jedinym vizualem prave ten nahled, ktery vetting
-vyhodil. Bez nej propadaly az na logo (videno 9. 8. 2026 u clanku o Insidious
-a Extraktorech). Kinobox ma `og:image` u kazdeho clanku, takze krok 4 uz by
-nemel nastat.
+Krok 2 dela veskerou praci a je to zamerne ten spravny obrazek -- clanku
+skutecne patri, msn-feed ho jen vyradil kvuli pravidlum MSN.
 
-Stranka clanku se stahuje jen u polozek, ktere obrazek jinak nemaji -- typicky
-0-2 dotazy za build.
+**Krok 4 z CI temer nikdy neprojde:** kinobox.cz vraci GitHub runnerum
+`403 Forbidden`. Overeno 10. 8. 2026 -- proto ta oklika pres `thumbs.json`.
+Z lokalniho stroje `og:image` funguje, takze krok 4 zustava jako zaloha.
+
+Krok 3 taky casto nepomuze: kratke zpravy a recenze **nemaji v tele zadny
+obrazek**, jedinym vizualem je prave ten nahled.
 
 Pokud by i tak nejaka polozka zustala bez obrazku, skript skonci s chybou a
 workflow spadne -- radeji hlasita chyba nez tichy feed s dirou.
