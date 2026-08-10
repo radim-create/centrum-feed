@@ -34,18 +34,31 @@ Partner Hubu -- Centrum.cz ho nema. Nektere polozky proto prijdou ze zdroje bez
 `<media:content>`.
 
 Obrazky v tele clanku (`content:encoded`) msn-feed nefiltruje, takze se pouzije
-trojstupnovy fallback:
+ctyrstupnovy fallback:
 
 1. `<media:content>` ze zdrojoveho MSN feedu
 2. prvni `http(s)` obrazek z tela clanku (relativni cesty a `data:` URI se
    preskakuji)
-3. `FALLBACK_IMAGE_URL`
+3. **`og:image` ze stranky clanku** -- stahne se `link` polozky a vytahne
+   `<meta property="og:image">`
+4. `FALLBACK_IMAGE_URL` (logo)
+
+Krok 3 tam je proto, ze **spousta clanku nema v tele zadny obrazek** -- u
+kratkych zprav a recenzi je jedinym vizualem prave ten nahled, ktery vetting
+vyhodil. Bez nej propadaly az na logo (videno 9. 8. 2026 u clanku o Insidious
+a Extraktorech). Kinobox ma `og:image` u kazdeho clanku, takze krok 4 uz by
+nemel nastat.
+
+Stranka clanku se stahuje jen u polozek, ktere obrazek jinak nemaji -- typicky
+0-2 dotazy za build.
 
 Pokud by i tak nejaka polozka zustala bez obrazku, skript skonci s chybou a
 workflow spadne -- radeji hlasita chyba nez tichy feed s dirou.
 
-V logu buildu je videt rozpad: `img_feed=19 img_body=1 img_fallback=0`,
-plus u kazde polozky s nahradou i jeji nazev.
+V logu buildu je videt rozpad, napr. `img_feed=18 img_body=1 img_og=1
+img_fallback=0`, plus u kazde polozky s nahradou i jeji nazev. Radek zacinajici
+`!! LOGO misto nahledu` znamena, ze clanek nema obrazek opravdu nikde -- stoji
+za to se na nej podivat rucne.
 
 ## Spousteni
 

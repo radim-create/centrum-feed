@@ -195,6 +195,37 @@ def first_body_image(content: str) -> str:
     return ""
 
 
+_OG_CACHE: dict = {}
+
+
+def og_image(link: str) -> str:
+    """Nahledovy obrazek z <meta property="og:image"> na strance clanku.
+
+    Zachrana pro clanky, ktere nemaji ani nahled v MSN feedu, ani zadny
+    obrazek v tele - to je bezne u kratkych zprav a recenzi, kde je jedinym
+    vizualem prave ten nahled. Kinobox ma og:image u kazdeho clanku.
+    """
+    if link in _OG_CACHE:
+        return _OG_CACHE[link]
+    url = ""
+    try:
+        page = http_get(link, timeout=20).decode("utf-8", "replace")
+        for pat in (
+            r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
+            r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']',
+        ):
+            m = re.search(pat, page, re.I)
+            if m:
+                cand = html.unescape(m.group(1)).strip()
+                if cand.startswith(("http://", "https://")):
+                    url = cand
+                    break
+    except Exception as e:
+        print(f"  ! og:image se nepodarilo nacist ({e}): {link}", file=sys.stderr)
+    _OG_CACHE[link] = url
+    return url
+
+
 # ------------------------------------------------------------------ transform
 
 def transform_item(item: str, stats: dict,
@@ -249,9 +280,14 @@ def transform_item(item: str, stats: dict,
             source = "body"
             stats["image_from_body"].append(title)
         else:
-            img_url = FALLBACK_IMAGE_URL
-            source = "fallback"
-            stats["image_fallback"].append(title)
+            img_url = og_image(link)
+            if img_url:
+                source = "og"
+                stats["image_from_og"].append(title)
+            else:
+                img_url = FALLBACK_IMAGE_URL
+                source = "fallback"
+                stats["image_fallback"].append(title)
         img_type = mime_for(img_url)
 
     media_title = field(inner, "media:title") if inner else ""
@@ -320,7 +356,8 @@ def main() -> int:
     embeds = load_embeds()
 
     stats = {"published": [], "skipped": [], "with_image": 0,
-             "image_from_body": [], "image_fallback": [], "image_source": {},
+             "image_from_body": [], "image_from_og": [], "image_fallback": [],
+             "image_source": {},
              "video_embed": [], "video_bez_id": [], "video_jiny_tvar": []}
     built = [x for x in (transform_item(i, stats, embeds) for i in items) if x]
     if not built:
@@ -366,6 +403,7 @@ def main() -> int:
           f"with_image={stats['with_image']}/{n} "
           f"img_feed={stats['image_source'].get('feed', 0)} "
           f"img_body={stats['image_source'].get('body', 0)} "
+          f"img_og={stats['image_source'].get('og', 0)} "
           f"img_fallback={stats['image_source'].get('fallback', 0)} "
           f"video_embed={len(stats['video_embed'])} "
           f"video_bez_id={len(stats['video_bez_id'])} "
@@ -379,8 +417,11 @@ def main() -> int:
         print(f"  ! video: chybi zaznam v embeds.json, zustava odkaz: {t}")
     for t in stats["image_from_body"]:
         print(f"  nahled z tela clanku (MSN nahled chybel): {t}")
+    for t in stats["image_from_og"]:
+        print(f"  nahled z og:image na strance clanku: {t}")
     for t in stats["image_fallback"]:
-        print(f"  ! nahled z FALLBACK_IMAGE_URL (v tele zadny obrazek): {t}")
+        print(f"  !! LOGO misto nahledu - clanek nema obrazek nikde "
+              f"(ani og:image): {t}")
     for t in stats["skipped"]:
         print(f"  preskoceno (chybi title/link/pubDate): {t}")
 
