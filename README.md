@@ -126,6 +126,30 @@ Video konci na konci clanku, ne na sve puvodni pozici. To je dane tim, ze
 `msn-feed` iframe vyrizne a vetu prilepi az za text; puvodni umisteni se
 nikam neuklada.
 
+## Kviz -- pripraveno, ale zatim neaktivni
+
+U kvizovych clanku vklada msn-feed vetu **"Kvíz můžete vyplnit na Kinoboxu"**
+s odkazem na clanek. Ten je pro ctenare na Centru stejne slepy jako drive
+u videa.
+
+Kviz jde vlozit primo -- bezi jako samostatna aplikace na
+`kinobox-quiz-lake.vercel.app/embed/{uuid}` a v iframu funguje. Podpora je
+hotova: `embed_quiz()` vetu nahradi prehravacem, jakmile najde kvizovy `src`
+v `iframes.json`.
+
+**Zatim se ale neuplatni.** Zdrojovy Kinobox feed kvizovy iframe neobsahuje --
+overeno 12. 8. 2026: `iframes.json` mel 19 zaznamu ze 13 clanku a vsechny byly
+z `www.kinobox.cz` (videa), kvizovy clanek 56722 tam nebyl vubec. Obsah toho
+clanku ve feedu neobsahuje `<iframe>`, `<div>`, `<script>` ani zminku o kvizu;
+widget se dokresluje az v prohlizeci na kinobox.cz.
+
+Aby to zacalo fungovat, musi kvizovy iframe **prijit uz ve zdrojovem feedu**
+`https://www.kinobox.cz/api/rss-centrum` -- stejne, jako tam uz je iframe
+videa. Pak se to chytne samo, bez dalsich zasahu.
+
+Do te doby veta s odkazem zustava, jak byla, a v logu se objevi
+`kviz_bez_src=1` s nazvem clanku.
+
 [doc]: https://partner.centrum.cz/jak-to-funguje/dokumentace
 
 ## Kdyz je verejna URL starsi nez git

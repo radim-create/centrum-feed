@@ -90,6 +90,22 @@ THUMBS_URL = os.environ.get(
     "THUMBS_URL",
     "https://raw.githubusercontent.com/radim-create/msn-feed/main/thumbs.json")
 
+# Kviz.
+# msn-feed vklada vetu QUIZ_LINE s odkazem na clanek - a ten je pro ctenare
+# na Centru stejne slepy jako u videa. Kviz sam bezi jako samostatna aplikace
+# na jine domene, takze ho lze vlozit primo.
+#
+# Adresu embedu neuhadneme: msn-feed proto zapisuje src VSECH iframu, ktere
+# maze, do iframes.json (mapa "id clanku" -> seznam src). Kvizovy embed z nej
+# poznáme podle QUIZ_SRC_RE.
+IFRAMES_URL = os.environ.get(
+    "IFRAMES_URL",
+    "https://raw.githubusercontent.com/radim-create/msn-feed/main/iframes.json")
+QUIZ_LINE = "Kvíz můžete vyplnit na Kinoboxu"
+QUIZ_SRC_RE = re.compile(os.environ.get("QUIZ_SRC_RE", r"quiz"), re.I)
+QUIZ_HEIGHT = os.environ.get("QUIZ_HEIGHT", "750")
+QUIZ_TITLE = "Kinobox kvíz"
+
 VIDEO_LINE = "Video si můžete přehrát na Kinoboxu."
 EMBED_BASE = os.environ.get("EMBED_BASE", "https://www.kinobox.cz/embed/")
 EMBED_WIDTH = os.environ.get("EMBED_WIDTH", "580")
@@ -192,6 +208,44 @@ def embed_video(content: str, link: str, embeds: dict, stats: dict,
     return new
 
 
+def quiz_iframe(src: str) -> str:
+    """Kviz je vysoky a responzivni, proto jinak nez video.
+
+    Rozmery davame atributy i ve style - kdyby Centrum jedno z toho odstranilo,
+    druhe kviz porad udrzi citelny.
+    """
+    return (
+        f'<p><iframe src="{esc(src)}" title="{esc(QUIZ_TITLE)}" '
+        f'width="100%" height="{esc(QUIZ_HEIGHT)}" '
+        f'style="width:100%;min-height:{esc(QUIZ_HEIGHT)}px;border:0" '
+        f'frameborder="0" allowfullscreen></iframe></p>'
+    )
+
+
+def embed_quiz(content: str, link: str, iframes: dict, stats: dict,
+               title: str) -> str:
+    """Nahradi vetu 'Kvíz můžete vyplnit na Kinoboxu' realnym kvizem."""
+    if QUIZ_LINE not in content:
+        return content
+
+    src = next((u for u in iframes.get(article_id(link), [])
+                if QUIZ_SRC_RE.search(u)), "")
+    if not src:
+        stats["kviz_bez_src"].append(title)
+        return content
+
+    # msn-feed vklada presne: <p><a href="{link}">QUIZ_LINE</a></p>
+    pattern = (r"<p>\s*<a\b[^>]*>\s*" + re.escape(QUIZ_LINE)
+               + r"\s*</a>\s*</p>")
+    new, n = re.subn(pattern, quiz_iframe(src), content, count=1)
+    if n == 0:
+        new = content.replace(QUIZ_LINE, "", 1) + quiz_iframe(src)
+        stats["kviz_jiny_tvar"].append(title)
+    else:
+        stats["kviz_embed"].append(title)
+    return new
+
+
 def first_body_image(content: str) -> str:
     """Prvni http(s) obrazek z tela clanku. Pouziva se, kdyz chybi nahled."""
     for m in re.finditer(r'<img\b[^>]*?\bsrc\s*=\s*["\']([^"\']+)["\']',
@@ -236,7 +290,7 @@ def og_image(link: str) -> str:
 # ------------------------------------------------------------------ transform
 
 def transform_item(item: str, stats: dict, embeds: dict,
-                   thumbs: dict) -> tuple[datetime, str] | None:
+                   thumbs: dict, iframes: dict) -> tuple[datetime, str] | None:
     title = field(item, "title")
     link = field(item, "link")
     desc = field(item, "description")
@@ -262,6 +316,7 @@ def transform_item(item: str, stats: dict, embeds: dict,
         pub_dt = pub_dt.replace(tzinfo=timezone.utc)
 
     content = embed_video(content, link, embeds, stats, title)
+    content = embed_quiz(content, link, iframes, stats, title)
 
     # Nahledovy obrazek. Trojstupnovy fallback, aby ho mela KAZDA polozka:
     #   1) <media:content> ze zdrojoveho MSN feedu
@@ -355,6 +410,22 @@ def load_json_map(url: str, file_env: str, popis: str) -> dict:
         return {}
 
 
+def load_iframes() -> dict:
+    """Mapa 'id clanku' -> seznam src iframu, ktere msn-feed smazal."""
+    path = os.environ.get("IFRAMES_FILE")
+    try:
+        raw = (Path(path).read_text(encoding="utf-8") if path
+               else http_get(IFRAMES_URL, timeout=30).decode("utf-8"))
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise ValueError("iframes.json neni objekt")
+        return {str(k): [str(x) for x in (v if isinstance(v, list) else [v])]
+                for k, v in data.items()}
+    except Exception as e:
+        print(f"WARNING: iframes.json se nepodarilo nacist ({e})", file=sys.stderr)
+        return {}
+
+
 def main() -> int:
     src = os.environ.get("SOURCE_FILE")
     xml = (Path(src).read_text(encoding="utf-8") if src
@@ -369,13 +440,15 @@ def main() -> int:
 
     embeds = load_json_map(EMBEDS_URL, "EMBEDS_FILE", "embeds.json")
     thumbs = load_json_map(THUMBS_URL, "THUMBS_FILE", "thumbs.json")
+    iframes = load_iframes()
 
     stats = {"published": [], "skipped": [], "with_image": 0,
              "image_from_body": [], "image_from_thumbs": [],
              "image_from_og": [], "image_fallback": [],
              "image_source": {},
-             "video_embed": [], "video_bez_id": [], "video_jiny_tvar": []}
-    built = [x for x in (transform_item(i, stats, embeds, thumbs) for i in items) if x]
+             "video_embed": [], "video_bez_id": [], "video_jiny_tvar": [],
+             "kviz_embed": [], "kviz_bez_src": [], "kviz_jiny_tvar": []}
+    built = [x for x in (transform_item(i, stats, embeds, thumbs, iframes) for i in items) if x]
     if not built:
         print("ERROR: zadna polozka neprosla transformaci", file=sys.stderr)
         return 1
@@ -424,12 +497,20 @@ def main() -> int:
           f"img_fallback={stats['image_source'].get('fallback', 0)} "
           f"video_embed={len(stats['video_embed'])} "
           f"video_bez_id={len(stats['video_bez_id'])} "
+          f"kviz_embed={len(stats['kviz_embed'])} "
+          f"kviz_bez_src={len(stats['kviz_bez_src'])} "
           f"skipped={len(stats['skipped'])} "
           f"newest={rfc822_prague(newest)}")
     for t in stats["video_embed"]:
         print(f"  video: vlozen iframe: {t}")
     for t in stats["video_jiny_tvar"]:
         print(f"  ! video: odstavec mel jiny tvar, iframe pripojen na konec: {t}")
+    for t in stats["kviz_embed"]:
+        print(f"  kviz: vlozen iframe: {t}")
+    for t in stats["kviz_jiny_tvar"]:
+        print(f"  ! kviz: odstavec mel jiny tvar, iframe pripojen na konec: {t}")
+    for t in stats["kviz_bez_src"]:
+        print(f"  ! kviz: v iframes.json neni kvizovy src, zustava odkaz: {t}")
     for t in stats["video_bez_id"]:
         print(f"  ! video: chybi zaznam v embeds.json, zustava odkaz: {t}")
     for t in stats["image_from_thumbs"]:
